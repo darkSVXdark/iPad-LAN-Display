@@ -1,0 +1,43 @@
+<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1"><meta name="apple-mobile-web-app-capable" content="yes"><title>iPad LAN Display</title><style>body{margin:0;background:#111;color:white;font:18px sans-serif;overflow:hidden}#screen{width:100vw;height:100vh;object-fit:contain;display:none}#panel{padding:24px}input,button{font-size:22px;margin:8px;padding:10px}#state{position:fixed;bottom:0;background:#222b;font-size:12px;z-index:3}#cursor{display:none;position:fixed;left:0;top:0;pointer-events:none;z-index:2;width:20px;height:28px;will-change:transform}</style><div id="panel"><h2>Экран Mac · 0.3.1</h2><p>Введите код из приложения на Mac.</p><input id="code" type="tel" maxlength="8"><button id="pair">Подключить</button><p><button id="fallback">Резервный JPEG</button></p><p>Используйте только доверенный Wi-Fi: изображение передаётся без шифрования.</p></div><img id="screen"><div id="cursor"><svg width="20" height="28" viewBox="0 0 20 28"><path d="M1 1 L1 23 L6 18 L10 27 L14 25 L10 17 L18 17 Z" fill="black" stroke="white" stroke-width="1.5"/></svg></div><div id="state"></div><script>
+(function(){'use strict';
+var img=document.getElementById('screen'),panel=document.getElementById('panel'),state=document.getElementById('state'),cursor=document.getElementById('cursor');
+var key='',ws=null,cursorWS=null,timer=null,watch=null,decodeWatch=null,cursorTimer=null,mode='',url=null,frames=0,epoch=Date.now(),gen=0,lastDecode=0;
+try{key=localStorage.getItem('ipadKey')||'';}catch(e){}
+function status(s){state.textContent=s;}
+function cleanup(){gen++;clearTimeout(timer);clearTimeout(watch);clearTimeout(decodeWatch);clearTimeout(cursorTimer);if(cursorWS){cursorWS.onclose=null;cursorWS.close();cursorWS=null;}if(ws){ws.onclose=null;ws.onerror=null;ws.close();ws=null;}img.onload=null;img.onerror=null;cursor.style.display='none';if(url){URL.revokeObjectURL(url);url=null;}}
+function position(s){var a=s.split(':'),x=+a[1],y=+a[2];if(x<0||y<0){cursor.style.display='none';return;}var scale=Math.min(window.innerWidth/1024,window.innerHeight/768),left=(window.innerWidth-1024*scale)/2,top=(window.innerHeight-768*scale)/2;cursor.style.display='block';var transform='translate3d('+(left+x*scale)+'px,'+(top+y*scale)+'px,0)';cursor.style.webkitTransform=transform;cursor.style.transform=transform;}
+function shown(){if(img.style.display!=='block'||panel.style.display!=='none'){panel.style.display='none';img.style.display='block';}frames++;if(Date.now()-epoch>2000){status(mode+' · декодировано '+(frames*1000/(Date.now()-epoch)).toFixed(1)+' FPS · JPEG декод. '+lastDecode+' мс');frames=0;epoch=Date.now();}}
+function again(){cleanup();status('Переподключение…');timer=setTimeout(connect,1000);}
+function pull(){cleanup();frames=0;epoch=Date.now();mode='HTTP JPEG';var g=gen;
+function next(){if(g!==gen)return;var started=Date.now();decodeWatch=setTimeout(again,5000);img.onload=function(){if(g!==gen)return;clearTimeout(decodeWatch);lastDecode=Date.now()-started;shown();timer=setTimeout(next,Math.max(0,17-(Date.now()-started)));};img.onerror=function(){clearTimeout(decodeWatch);panel.style.display='block';status('Нет кадра: проверьте экран и код на Mac');timer=setTimeout(next,1000);};img.src='/frame?key='+encodeURIComponent(key)+'&t='+Date.now();}
+function pollCursor(){if(g!==gen)return;var x=new XMLHttpRequest();x.open('GET','/cursor?key='+encodeURIComponent(key),true);x.timeout=1000;x.onload=function(){if(g!==gen)return;if(x.status===200)position(x.responseText);cursorTimer=setTimeout(pollCursor,100);};x.onerror=x.ontimeout=function(){if(g===gen)cursorTimer=setTimeout(pollCursor,1000);};x.send();}next();pollCursor();}
+function connect(){
+cleanup();panel.style.display='none';status('Проверка сохранённого подключения…');
+var g=gen,x=new XMLHttpRequest();
+x.open('GET','/session?key='+encodeURIComponent(key),true);x.timeout=5000;
+x.onload=function(){
+if(g!==gen)return;
+if(x.status===200){stream();return;}
+if(x.status===403){key='';try{localStorage.removeItem('ipadKey');}catch(e){}panel.style.display='block';status('Введите код для подключения');return;}
+again();
+};
+x.onerror=x.ontimeout=function(){if(g===gen)again();};x.send();
+}
+function stream(){cleanup();frames=0;epoch=Date.now();if(!window.Blob||!window.WebSocket||!window.URL||!URL.createObjectURL){pull();return;}mode='WebSocket JPEG';var g=gen;
+try{ws=new WebSocket('ws://'+location.host+'/ws?key='+encodeURIComponent(key)+'&channel=video');ws.binaryType='blob';}catch(e){pull();return;}
+try {
+cursorWS=new WebSocket('ws://'+location.host+'/ws?key='+encodeURIComponent(key)+'&channel=cursor');
+cursorWS.onmessage=function(e){if(g===gen&&typeof e.data==='string'&&e.data.indexOf('c:')===0)position(e.data);};
+cursorWS.onclose=function(){if(g===gen)again();};
+}catch(e){pull();return;}
+watch=setTimeout(pull,5000);
+ws.onmessage=function(e){if(g!==gen)return;clearTimeout(watch);watch=setTimeout(again,6000);
+if(typeof e.data==='string'){if(e.data.indexOf('c:')===0)position(e.data);return;}
+if(!(e.data instanceof Blob)||url){pull();return;}
+var received=Date.now();decodeWatch=setTimeout(again,5000);url=URL.createObjectURL(e.data);
+img.onload=function(){if(g!==gen)return;clearTimeout(decodeWatch);lastDecode=Date.now()-received;shown();URL.revokeObjectURL(url);url=null;if(ws&&ws.readyState===1)ws.send('ack:'+lastDecode);};img.onerror=pull;img.src=url;};
+ws.onclose=function(){if(g===gen)again();};ws.onerror=function(){if(g===gen)pull();};}
+document.getElementById('pair').onclick=function(){var x=new XMLHttpRequest();x.open('GET','/pair?code='+encodeURIComponent(document.getElementById('code').value),true);x.timeout=5000;x.onload=function(){if(x.status!==200){status(x.responseText);return;}key=x.responseText;try{localStorage.setItem('ipadKey',key);}catch(e){}connect();};x.onerror=function(){status('Mac недоступен');};x.send();};
+document.getElementById('fallback').onclick=pull;document.addEventListener('visibilitychange',function(){if(document.hidden)cleanup();else connect();});connect();
+})();
+</script></html>
